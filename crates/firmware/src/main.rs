@@ -3,13 +3,14 @@
 
 mod jiggler;
 
-use common::{parse_command, serialize_response, Command, JiggleConfig, Response};
+use common::{parse_command, serialize_response, Command, JiggleConfig, JiggleMode, Response};
 use cortex_m_rt::entry;
 use heapless::String;
 use panic_halt as _;
 use rp2040_boot2 as _;
 use rp2040_hal::{
-    clocks::init_clocks_and_plls, pac, sio::Sio, timer::Timer, usb::UsbBus, watchdog::Watchdog,
+    clocks::init_clocks_and_plls, pac, rom_data, sio::Sio, timer::Timer, usb::UsbBus,
+    watchdog::Watchdog,
 };
 use usb_device::{
     class_prelude::UsbBusAllocator,
@@ -25,6 +26,74 @@ use usbd_serial::SerialPort;
 #[no_mangle]
 #[used]
 pub static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_W25Q080;
+
+// Flash storage parameters for persistent settings
+// RP2040 flash base in memory space is 0x10000000.
+// On the RP2040-Zero (2MB flash), offset 0x001F0000 (XIP 0x101F0000) is the last 64KB sector,
+// well beyond our firmware size (~50KB) and safely aligned to a 4096-byte sector boundary.
+const FLASH_CONFIG_OFFSET: u32 = 0x001F_0000;
+const FLASH_CONFIG_ADDR: *const u8 = (0x1000_0000 + FLASH_CONFIG_OFFSET) as *const u8;
+const CONFIG_MAGIC: u32 = 0x4A494747; // 'JIGG'
+
+fn load_saved_config() -> Option<JiggleConfig> {
+    unsafe {
+        let magic = core::ptr::read_unaligned(FLASH_CONFIG_ADDR as *const u32);
+        if magic != CONFIG_MAGIC {
+            return None;
+        }
+
+        let enabled_byte = core::ptr::read(FLASH_CONFIG_ADDR.add(4));
+        let mode_byte = core::ptr::read(FLASH_CONFIG_ADDR.add(5));
+        let period_ms = core::ptr::read_unaligned(FLASH_CONFIG_ADDR.add(6) as *const u32);
+        let scale_px = core::ptr::read(FLASH_CONFIG_ADDR.add(10)) as i8;
+
+        let mode = match mode_byte {
+            0 => JiggleMode::Off,
+            1 => JiggleMode::Random,
+            2 => JiggleMode::GentleNudge,
+            3 => JiggleMode::Circle,
+            _ => return None,
+        };
+
+        let mut cfg = JiggleConfig {
+            enabled: enabled_byte != 0,
+            mode,
+            period_ms,
+            scale_px,
+        };
+        cfg.sanitize();
+        Some(cfg)
+    }
+}
+
+fn save_config_to_flash(cfg: &JiggleConfig) -> bool {
+    let mut page_buf = [0xFFu8; 256];
+    let magic_bytes = CONFIG_MAGIC.to_le_bytes();
+    page_buf[0..4].copy_from_slice(&magic_bytes);
+    page_buf[4] = if cfg.enabled { 1 } else { 0 };
+    page_buf[5] = match cfg.mode {
+        JiggleMode::Off => 0,
+        JiggleMode::Random => 1,
+        JiggleMode::GentleNudge => 2,
+        JiggleMode::Circle => 3,
+    };
+    let period_bytes = cfg.period_ms.to_le_bytes();
+    page_buf[6..10].copy_from_slice(&period_bytes);
+    page_buf[10] = cfg.scale_px as u8;
+
+    cortex_m::interrupt::free(|_| unsafe {
+        rom_data::connect_internal_flash();
+        rom_data::flash_exit_xip();
+        // Erase 4096-byte sector at FLASH_CONFIG_OFFSET
+        rom_data::flash_range_erase(FLASH_CONFIG_OFFSET, 4096, 65536, 0xD8);
+        // Program 256-byte page
+        rom_data::flash_range_program(FLASH_CONFIG_OFFSET, page_buf.as_ptr(), 256);
+        rom_data::flash_flush_cache();
+        rom_data::flash_enter_cmd_xip();
+    });
+
+    true
+}
 
 #[entry]
 fn main() -> ! {
@@ -72,7 +141,8 @@ fn main() -> ! {
         .composite_with_iads()
         .build();
 
-    let mut engine = jiggler::JigglerEngine::new(JiggleConfig::default());
+    let initial_config = load_saved_config().unwrap_or_default();
+    let mut engine = jiggler::JigglerEngine::new(initial_config);
     let mut line_buf: String<128> = String::new();
 
     // Configuration session management:
@@ -114,9 +184,17 @@ fn main() -> ! {
                                 engine.set_config(new_cfg);
                                 Response::Ok
                             }
-                            Ok(Command::SaveConfig) => Response::Ok,
+                            Ok(Command::SaveConfig) => {
+                                if save_config_to_flash(engine.config()) {
+                                    Response::Ok
+                                } else {
+                                    Response::Error(common::make_string("flash write failed"))
+                                }
+                            }
                             Ok(Command::ResetDefaults) => {
-                                engine.set_config(JiggleConfig::default());
+                                let default_cfg = JiggleConfig::default();
+                                engine.set_config(default_cfg);
+                                save_config_to_flash(&default_cfg);
                                 Response::Ok
                             }
                             Ok(Command::StartTest { duration_secs }) => {

@@ -6,6 +6,9 @@ license.workspace = true
 
 [dependencies]
 common = { path = "../common" }
+heapless = "0.8"
+
+[target.'cfg(target_arch = "arm")'.dependencies]
 cortex-m = "0.7"
 cortex-m-rt = "0.7"
 panic-halt = "0.2"
@@ -14,7 +17,6 @@ rp2040-boot2 = "0.3"
 usb-device = "0.3"
 usbd-hid = "0.10"
 usbd-serial = "0.2"
-heapless = "0.8"
 embedded-hal = "0.2"
 
 [build-dependencies]

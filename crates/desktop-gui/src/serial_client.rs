@@ -125,17 +125,19 @@ impl SerialClient {
                         }
                         Command::SetConfig(cfg) => {
                             let mode_str = match cfg.mode {
-                                JiggleMode::Off => "off",
                                 JiggleMode::Random => "random",
                                 JiggleMode::GentleNudge => "nudge",
                                 JiggleMode::Circle => "circle",
                             };
                             format!(
-                                "SET enabled={} mode={} period={} scale={}\r\n",
+                                "SET enabled={} mode={} period={} scale={} rth={} rth_period={} click_home={}\r\n",
                                 if cfg.enabled { 1 } else { 0 },
                                 mode_str,
                                 cfg.period_ms,
-                                cfg.scale_px
+                                cfg.scale_px,
+                                if cfg.return_to_home { 1 } else { 0 },
+                                cfg.rth_period_secs,
+                                if cfg.click_home { 1 } else { 0 },
                             )
                         }
                     };
@@ -188,14 +190,18 @@ impl SerialClient {
                                     match k {
                                         "enabled" => cfg.enabled = v == "1" || v == "true",
                                         "mode" => match v {
-                                            "off" => cfg.mode = JiggleMode::Off,
                                             "random" => cfg.mode = JiggleMode::Random,
                                             "nudge" => cfg.mode = JiggleMode::GentleNudge,
                                             "circle" => cfg.mode = JiggleMode::Circle,
                                             _ => {}
                                         },
                                         "period_ms" => cfg.period_ms = v.parse().unwrap_or(1000),
-                                        "scale_px" => cfg.scale_px = v.parse().unwrap_or(5),
+                                        "scale_px" => cfg.scale_px = v.parse().unwrap_or(20),
+                                        "rth" => cfg.return_to_home = v == "1" || v == "true",
+                                        "rth_period" => {
+                                            cfg.rth_period_secs = v.parse().unwrap_or(30)
+                                        }
+                                        "click_home" => cfg.click_home = v == "1" || v == "true",
                                         "jiggles" => jiggles = v.parse().unwrap_or(0),
                                         "uptime" => uptime = v.parse().unwrap_or(0),
                                         "paused" => paused = v == "1" || v == "true",

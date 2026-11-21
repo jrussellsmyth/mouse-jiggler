@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum JiggleMode {
-    Off,
     #[default]
     Random,
     GentleNudge,
@@ -16,7 +15,10 @@ pub struct JiggleConfig {
     pub enabled: bool,
     pub mode: JiggleMode,
     pub period_ms: u32,
-    pub scale_px: i8,
+    pub scale_px: u16,
+    pub return_to_home: bool,
+    pub rth_period_secs: u32,
+    pub click_home: bool,
 }
 
 impl Default for JiggleConfig {
@@ -25,7 +27,10 @@ impl Default for JiggleConfig {
             enabled: true,
             mode: JiggleMode::Random,
             period_ms: 1000,
-            scale_px: 5,
+            scale_px: 20,
+            return_to_home: false,
+            rth_period_secs: 30,
+            click_home: false,
         }
     }
 }
@@ -33,7 +38,8 @@ impl Default for JiggleConfig {
 impl JiggleConfig {
     pub fn sanitize(&mut self) {
         self.period_ms = self.period_ms.clamp(50, 300_000);
-        self.scale_px = self.scale_px.clamp(1, 100);
+        self.scale_px = self.scale_px.clamp(1, 400);
+        self.rth_period_secs = self.rth_period_secs.clamp(1, 3600);
     }
 }
 
@@ -103,8 +109,11 @@ pub fn parse_command(input: &str) -> Result<Command, heapless::String<64>> {
         return Ok(cmd);
     }
 
-    if trimmed.starts_with("SET ") || trimmed.starts_with("set ") {
-        let parts = trimmed[4..].split_whitespace();
+    if let Some(rest) = trimmed
+        .strip_prefix("SET ")
+        .or_else(|| trimmed.strip_prefix("set "))
+    {
+        let parts = rest.split_whitespace();
         let mut config = JiggleConfig::default();
         for part in parts {
             let mut kv = part.split('=');
@@ -113,9 +122,7 @@ pub fn parse_command(input: &str) -> Result<Command, heapless::String<64>> {
             match key {
                 "enabled" => config.enabled = val == "1" || val.eq_ignore_ascii_case("true"),
                 "mode" => {
-                    if val.eq_ignore_ascii_case("off") {
-                        config.mode = JiggleMode::Off;
-                    } else if val.eq_ignore_ascii_case("random") {
+                    if val.eq_ignore_ascii_case("random") {
                         config.mode = JiggleMode::Random;
                     } else if val.eq_ignore_ascii_case("nudge")
                         || val.eq_ignore_ascii_case("gentlenudge")
@@ -131,9 +138,20 @@ pub fn parse_command(input: &str) -> Result<Command, heapless::String<64>> {
                     }
                 }
                 "scale" | "scale_px" => {
-                    if let Ok(parsed) = val.parse::<i8>() {
+                    if let Ok(parsed) = val.parse::<u16>() {
                         config.scale_px = parsed;
                     }
+                }
+                "rth" | "return_to_home" => {
+                    config.return_to_home = val == "1" || val.eq_ignore_ascii_case("true");
+                }
+                "rth_period" | "rth_period_secs" => {
+                    if let Ok(parsed) = val.parse::<u32>() {
+                        config.rth_period_secs = parsed;
+                    }
+                }
+                "click_home" => {
+                    config.click_home = val == "1" || val.eq_ignore_ascii_case("true");
                 }
                 _ => {}
             }
@@ -164,7 +182,6 @@ pub fn serialize_response(resp: &Response) -> heapless::String<256> {
             testing,
         } => {
             let mode_str = match config.mode {
-                JiggleMode::Off => "off",
                 JiggleMode::Random => "random",
                 JiggleMode::GentleNudge => "nudge",
                 JiggleMode::Circle => "circle",
@@ -172,11 +189,14 @@ pub fn serialize_response(resp: &Response) -> heapless::String<256> {
             use core::fmt::Write;
             let _ = write!(
                 out,
-                "STATUS enabled={} mode={} period_ms={} scale_px={} jiggles={} uptime={} paused={} testing={}\r\n",
+                "STATUS enabled={} mode={} period_ms={} scale_px={} rth={} rth_period={} click_home={} jiggles={} uptime={} paused={} testing={}\r\n",
                 if config.enabled { 1 } else { 0 },
                 mode_str,
                 config.period_ms,
                 config.scale_px,
+                if config.return_to_home { 1 } else { 0 },
+                config.rth_period_secs,
+                if config.click_home { 1 } else { 0 },
                 total_jiggles,
                 uptime_secs,
                 if *paused { 1 } else { 0 },

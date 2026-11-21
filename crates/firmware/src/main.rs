@@ -1,27 +1,47 @@
-#![no_std]
-#![no_main]
+#![cfg_attr(target_arch = "arm", no_std)]
+#![cfg_attr(target_arch = "arm", no_main)]
 
-mod jiggler;
+pub mod jiggler;
 
+#[cfg(not(target_arch = "arm"))]
+fn main() {
+    let mut engine = jiggler::JigglerEngine::new(common::JiggleConfig::default());
+    engine.on_jiggle_start(0);
+    let _ = engine.update(1000, false);
+    let _ = engine.config();
+    let _ = engine.total_jiggles();
+    engine.set_config(common::JiggleConfig::default());
+}
+
+#[cfg(target_arch = "arm")]
 use common::{parse_command, serialize_response, Command, JiggleConfig, JiggleMode, Response};
+#[cfg(target_arch = "arm")]
 use cortex_m_rt::entry;
+#[cfg(target_arch = "arm")]
 use heapless::String;
+#[cfg(target_arch = "arm")]
 use panic_halt as _;
+#[cfg(target_arch = "arm")]
 use rp2040_boot2 as _;
+#[cfg(target_arch = "arm")]
 use rp2040_hal::{
     clocks::init_clocks_and_plls, pac, rom_data, sio::Sio, timer::Timer, usb::UsbBus,
     watchdog::Watchdog,
 };
+#[cfg(target_arch = "arm")]
 use usb_device::{
     class_prelude::UsbBusAllocator,
     prelude::{UsbDeviceBuilder, UsbDeviceState, UsbVidPid},
 };
+#[cfg(target_arch = "arm")]
 use usbd_hid::{
     descriptor::{generator_prelude::*, MouseReport},
     hid_class::HIDClass,
 };
+#[cfg(target_arch = "arm")]
 use usbd_serial::SerialPort;
 
+#[cfg(target_arch = "arm")]
 #[link_section = ".boot2"]
 #[no_mangle]
 #[used]
@@ -31,13 +51,18 @@ pub static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_W25Q080;
 // RP2040 flash base in memory space is 0x10000000.
 // On the RP2040-Zero (2MB flash), offset 0x001F0000 (XIP 0x101F0000) is the last 64KB sector,
 // well beyond our firmware size (~50KB) and safely aligned to a 4096-byte sector boundary.
+#[cfg(target_arch = "arm")]
 const FLASH_CONFIG_OFFSET: u32 = 0x001F_0000;
+#[cfg(target_arch = "arm")]
 const FLASH_CONFIG_ADDR: *const u32 = (0x1000_0000 + FLASH_CONFIG_OFFSET) as *const u32;
-const CONFIG_MAGIC: u32 = 0x4A49_4748; // 'JIGH'
+#[cfg(target_arch = "arm")]
+const CONFIG_MAGIC: u32 = 0x4A49_4749; // 'JIGI'
 
+#[cfg(target_arch = "arm")]
 #[repr(C, align(4))]
 struct Aligned256([u8; 256]);
 
+#[cfg(target_arch = "arm")]
 fn load_saved_config() -> Option<JiggleConfig> {
     unsafe {
         let w0 = core::ptr::read_volatile(FLASH_CONFIG_ADDR);
@@ -50,13 +75,15 @@ fn load_saved_config() -> Option<JiggleConfig> {
         let w3 = core::ptr::read_volatile(FLASH_CONFIG_ADDR.add(3));
         let w4 = core::ptr::read_volatile(FLASH_CONFIG_ADDR.add(4));
         let w5 = core::ptr::read_volatile(FLASH_CONFIG_ADDR.add(5));
+        let w6 = core::ptr::read_volatile(FLASH_CONFIG_ADDR.add(6));
+        let w7 = core::ptr::read_volatile(FLASH_CONFIG_ADDR.add(7));
+        let w8 = core::ptr::read_volatile(FLASH_CONFIG_ADDR.add(8));
 
-        if (w0 ^ w1 ^ w2 ^ w3 ^ w4) != w5 {
+        if (w0 ^ w1 ^ w2 ^ w3 ^ w4 ^ w5 ^ w6 ^ w7) != w8 {
             return None;
         }
 
         let mode = match w2 {
-            0 => JiggleMode::Off,
             1 => JiggleMode::Random,
             2 => JiggleMode::GentleNudge,
             3 => JiggleMode::Circle,
@@ -67,7 +94,10 @@ fn load_saved_config() -> Option<JiggleConfig> {
             enabled: w1 != 0,
             mode,
             period_ms: w3,
-            scale_px: (w4 as i32).clamp(1, 100) as i8,
+            scale_px: w4.clamp(1, 400) as u16,
+            return_to_home: w5 != 0,
+            rth_period_secs: w6,
+            click_home: w7 != 0,
         };
         cfg.sanitize();
         Some(cfg)
@@ -76,6 +106,7 @@ fn load_saved_config() -> Option<JiggleConfig> {
 
 /// Runs entirely from SRAM (`.data`) so no instruction is ever fetched from XIP Flash
 /// while XIP mode is disabled during flash erase and programming.
+#[cfg(target_arch = "arm")]
 #[link_section = ".data"]
 #[inline(never)]
 unsafe fn write_flash_in_ram(
@@ -97,19 +128,22 @@ unsafe fn write_flash_in_ram(
     core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
 }
 
+#[cfg(target_arch = "arm")]
 fn save_config_to_flash(cfg: &JiggleConfig) -> bool {
     let mut page = Aligned256([0xFFu8; 256]);
     let w0 = CONFIG_MAGIC;
     let w1: u32 = if cfg.enabled { 1 } else { 0 };
     let w2: u32 = match cfg.mode {
-        JiggleMode::Off => 0,
         JiggleMode::Random => 1,
         JiggleMode::GentleNudge => 2,
         JiggleMode::Circle => 3,
     };
     let w3: u32 = cfg.period_ms;
-    let w4: u32 = (cfg.scale_px as i32) as u32;
-    let w5: u32 = w0 ^ w1 ^ w2 ^ w3 ^ w4;
+    let w4: u32 = cfg.scale_px as u32;
+    let w5: u32 = if cfg.return_to_home { 1 } else { 0 };
+    let w6: u32 = cfg.rth_period_secs;
+    let w7: u32 = if cfg.click_home { 1 } else { 0 };
+    let w8: u32 = w0 ^ w1 ^ w2 ^ w3 ^ w4 ^ w5 ^ w6 ^ w7;
 
     page.0[0..4].copy_from_slice(&w0.to_le_bytes());
     page.0[4..8].copy_from_slice(&w1.to_le_bytes());
@@ -117,6 +151,9 @@ fn save_config_to_flash(cfg: &JiggleConfig) -> bool {
     page.0[12..16].copy_from_slice(&w3.to_le_bytes());
     page.0[16..20].copy_from_slice(&w4.to_le_bytes());
     page.0[20..24].copy_from_slice(&w5.to_le_bytes());
+    page.0[24..28].copy_from_slice(&w6.to_le_bytes());
+    page.0[28..32].copy_from_slice(&w7.to_le_bytes());
+    page.0[32..36].copy_from_slice(&w8.to_le_bytes());
 
     // Copy boot2 into 4-byte aligned SRAM buffer and resolve all ROM function pointers
     // BEFORE exiting XIP mode.
@@ -147,6 +184,7 @@ fn save_config_to_flash(cfg: &JiggleConfig) -> bool {
     load_saved_config().is_some()
 }
 
+#[cfg(target_arch = "arm")]
 #[entry]
 fn main() -> ! {
     let mut pac = pac::Peripherals::take().unwrap();
@@ -206,6 +244,7 @@ fn main() -> ! {
     let mut host_connected = false;
     let mut last_host_contact_ms: u32 = 0;
     let mut test_until_ms: u32 = 0;
+    let mut was_jiggling = false;
 
     loop {
         let _ = usb_dev.poll(&mut [&mut usb_serial, &mut usb_hid]);
@@ -255,6 +294,7 @@ fn main() -> ! {
                             Ok(Command::StartTest { duration_secs }) => {
                                 test_until_ms =
                                     now_ms.saturating_add(duration_secs.saturating_mul(1000));
+                                engine.on_jiggle_start(now_ms);
                                 Response::Ok
                             }
                             Ok(Command::Pause) => {
@@ -302,12 +342,17 @@ fn main() -> ! {
         let is_testing = now_ms < test_until_ms;
         let should_jiggle = (!host_connected && !in_boot_grace_period) || is_testing;
 
+        if should_jiggle && !was_jiggling {
+            engine.on_jiggle_start(now_ms);
+        }
+        was_jiggling = should_jiggle;
+
         if usb_dev.state() == UsbDeviceState::Configured && should_jiggle {
-            if let Some((dx, dy)) = engine.update(now_ms, is_testing) {
+            if let Some(action) = engine.update(now_ms, is_testing) {
                 let report = MouseReport {
-                    buttons: 0,
-                    x: dx,
-                    y: dy,
+                    buttons: action.buttons,
+                    x: action.dx,
+                    y: action.dy,
                     wheel: 0,
                     pan: 0,
                 };

@@ -178,25 +178,52 @@ impl eframe::App for JigglerApp {
                         "Gentle Nudge",
                     );
                     ui.selectable_value(&mut self.config.mode, JiggleMode::Circle, "Circle");
-                    ui.selectable_value(&mut self.config.mode, JiggleMode::Off, "Off");
                 });
+
+                let full_slider_width = (ui.available_width() - 65.0).max(160.0);
+                ui.spacing_mut().slider_width = full_slider_width;
 
                 ui.add_space(4.0);
                 ui.label(format!(
-                    "Period: {} ms (Frequency: {:.1} Hz)",
+                    "Interval: {} ms (Frequency: {:.1} Hz)",
                     self.config.period_ms,
                     1000.0 / self.config.period_ms.max(1) as f32
                 ));
-                ui.add(
-                    egui::Slider::new(&mut self.config.period_ms, 100..=10_000)
-                        .text("Interval (ms)"),
-                );
+                ui.add(egui::Slider::new(&mut self.config.period_ms, 100..=10_000));
 
-                ui.add_space(4.0);
-                ui.label(format!("Movement Scale: {} px", self.config.scale_px));
-                ui.add(
-                    egui::Slider::new(&mut self.config.scale_px, 1..=50).text("Displacement (px)"),
-                );
+                match self.config.mode {
+                    JiggleMode::Random => {
+                        ui.add_space(4.0);
+                        ui.label(format!("Displacement: {} px", self.config.scale_px));
+                        ui.add(egui::Slider::new(&mut self.config.scale_px, 1..=400));
+
+                        ui.add_space(6.0);
+                        ui.checkbox(&mut self.config.return_to_home, "Return to Home");
+
+                        if self.config.return_to_home {
+                            ui.add_space(4.0);
+                            ui.label(format!(
+                                "Return to Home Period: {} s",
+                                self.config.rth_period_secs
+                            ));
+                            ui.add(egui::Slider::new(&mut self.config.rth_period_secs, 1..=300));
+
+                            ui.add_space(4.0);
+                            ui.checkbox(&mut self.config.click_home, "Click Home");
+                        }
+                    }
+                    JiggleMode::Circle => {
+                        ui.add_space(4.0);
+                        ui.label(format!("Diameter: {} px", self.config.scale_px));
+                        ui.add(egui::Slider::new(&mut self.config.scale_px, 1..=400));
+
+                        ui.add_space(6.0);
+                        ui.checkbox(&mut self.config.click_home, "Click Home");
+                    }
+                    JiggleMode::GentleNudge => {
+                        // Scale slider and label hidden in Gentle Nudge mode
+                    }
+                }
 
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
@@ -256,22 +283,15 @@ impl eframe::App for JigglerApp {
                         )
                         .clicked()
                     {
-                        if self.config.mode == JiggleMode::Off {
-                            self.action_feedback = Some((
-                                "Select a movement mode other than 'Off' to test".into(),
-                                std::time::Instant::now(),
-                            ));
-                        } else {
-                            let _ = self.client.send_command(Command::SetConfig(self.config));
-                            let _ = self
-                                .client
-                                .send_command(Command::StartTest { duration_secs: 10 });
-                            self.device_testing = true;
-                            self.action_feedback = Some((
-                                "Running 10-second test jiggle sequence...".into(),
-                                std::time::Instant::now(),
-                            ));
-                        }
+                        let _ = self.client.send_command(Command::SetConfig(self.config));
+                        let _ = self
+                            .client
+                            .send_command(Command::StartTest { duration_secs: 10 });
+                        self.device_testing = true;
+                        self.action_feedback = Some((
+                            "Running 10-second test jiggle sequence...".into(),
+                            std::time::Instant::now(),
+                        ));
                     }
                 });
             });

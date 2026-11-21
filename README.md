@@ -6,11 +6,10 @@ A high-performance USB-HID Mouse Jiggler firmware for the **Waveshare RP2040-Zer
 
 - **RP2040 USB Composite Device**: Emulates a standard USB-HID mouse alongside a USB CDC-ACM virtual serial port for real-time control.
 - **Configurable Motion Engines**:
-  - **Random Wander**: Subtle, natural-looking pseudo-random cursor movements with automatic return steps to avoid screen drifting.
-  - **Gentle Nudge**: Alternating 1-2 pixel micro-steps.
-  - **Circle**: Circular trajectory.
-  - **Off**: Pause jiggling while maintaining device connection.
-- **Dynamic Frequency & Scale**: Controllable movement period (interval in milliseconds) and movement scale (displacement in pixels).
+  - **Random**: Pseudo-random cursor movements up to 400 px displacement, with an optional **Return to Home (RTH)** timer (in seconds) that tracks cumulative movement and returns the cursor to its exact starting coordinates, plus an optional **Click Home** left-click upon returning home.
+  - **Gentle Nudge**: Alternating 2-pixel micro-steps with immediate return to origin.
+  - **Circle**: Smooth 16-point circular trajectory with configurable **Diameter** (up to 400 px) and an optional **Click Home** left-click after each completed circular orbit.
+- **Dynamic Interval & Scale**: Controllable movement interval (in milliseconds) and movement scale (Displacement / Diameter up to 400 pixels).
 - **Cross-Platform GUI Controller**: Built with `egui` and `eframe` for macOS, Windows, and Linux. Automatically enumerates serial ports, shows device uptime & jiggle telemetry, and syncs settings.
 
 ---

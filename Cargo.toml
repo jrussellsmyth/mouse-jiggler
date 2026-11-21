@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/common",
+    "crates/firmware",
     "crates/desktop-gui",
 ]
 default-members = [

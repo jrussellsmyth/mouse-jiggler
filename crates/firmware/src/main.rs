@@ -1,0 +1,133 @@
+#![no_std]
+#![no_main]
+
+mod jiggler;
+
+use common::{parse_command, serialize_response, Command, JiggleConfig, Response};
+use cortex_m_rt::entry;
+use heapless::String;
+use panic_halt as _;
+use rp2040_boot2 as _;
+use rp2040_hal::{
+    clocks::init_clocks_and_plls,
+    pac,
+    sio::Sio,
+    timer::Timer,
+    usb::UsbBus,
+    watchdog::Watchdog,
+};
+use usb_device::{
+    class_prelude::UsbBusAllocator,
+    prelude::{UsbDeviceBuilder, UsbDeviceState, UsbVidPid},
+};
+use usbd_hid::{
+    descriptor::{generator_prelude::*, MouseReport},
+    hid_class::HIDClass,
+};
+use usbd_serial::SerialPort;
+
+#[link_section = ".boot2"]
+#[used]
+pub static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_GENERIC_03H;
+
+#[entry]
+fn main() -> ! {
+    let mut pac = pac::Peripherals::take().unwrap();
+    let _core = pac::CorePeripherals::take().unwrap();
+
+    let mut watchdog = Watchdog::new(pac.WATCHDOG);
+    let _sio = Sio::new(pac.SIO);
+
+    let external_xtal_freq_hz = 12_000_000u32;
+    let clocks = init_clocks_and_plls(
+        external_xtal_freq_hz,
+        pac.XOSC,
+        pac.CLOCKS,
+        pac.PLL_SYS,
+        pac.PLL_USB,
+        &mut pac.RESETS,
+        &mut watchdog,
+    )
+    .ok()
+    .unwrap();
+
+    let timer = Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
+
+    let usb_bus = UsbBusAllocator::new(UsbBus::new(
+        pac.USBCTRL_REGS,
+        pac.USBCTRL_DPRAM,
+        clocks.usb_clock,
+        true,
+        &mut pac.RESETS,
+    ));
+
+    let mut usb_serial = SerialPort::new(&usb_bus);
+    let mut usb_hid = HIDClass::new(&usb_bus, MouseReport::desc(), 10);
+
+    let mut usb_dev = UsbDeviceBuilder::new(&usb_bus, UsbVidPid(0x16c0, 0x27dd))
+        .strings(&[usb_device::device::StringDescriptors::default()
+            .manufacturer("Waveshare")
+            .product("RP2040 Mouse Jiggler")
+            .serial_number("WAVE-RP2040-001")])
+        .unwrap()
+        .device_class(0xEF)
+        .device_sub_class(0x02)
+        .device_protocol(0x01)
+        .composite_with_iads()
+        .build();
+
+    let mut engine = jiggler::JigglerEngine::new(JiggleConfig::default());
+    let mut line_buf: String<128> = String::new();
+
+    loop {
+        if usb_dev.poll(&mut [&mut usb_serial, &mut usb_hid]) {
+            let mut read_buf = [0u8; 64];
+            if let Ok(count) = usb_serial.read(&mut read_buf) {
+                for &b in &read_buf[..count] {
+                    if b == b'\n' || b == b'\r' {
+                        if !line_buf.is_empty() {
+                            let resp = match parse_command(&line_buf) {
+                                Ok(Command::GetStatus) => Response::Status {
+                                    config: *engine.config(),
+                                    total_jiggles: engine.total_jiggles(),
+                                    uptime_secs: (timer.get_counter().ticks() / 1_000_000) as u32,
+                                },
+                                Ok(Command::SetConfig(new_cfg)) => {
+                                    engine.set_config(new_cfg);
+                                    Response::Ok
+                                }
+                                Ok(Command::SaveConfig) => Response::Ok,
+                                Ok(Command::ResetDefaults) => {
+                                    engine.set_config(JiggleConfig::default());
+                                    Response::Ok
+                                }
+                                Err(err) => Response::Error(err),
+                            };
+                            let resp_str = serialize_response(&resp);
+                            let _ = usb_serial.write(resp_str.as_bytes());
+                            line_buf.clear();
+                        }
+                    } else if line_buf.len() < line_buf.capacity() {
+                        let _ = line_buf.push(b as char);
+                    }
+                }
+            }
+        }
+
+        let now_us = timer.get_counter().ticks();
+        let now_ms = (now_us / 1000) as u32;
+
+        if usb_dev.state() == UsbDeviceState::Configured {
+            if let Some((dx, dy)) = engine.update(now_ms) {
+                let report = MouseReport {
+                    buttons: 0,
+                    x: dx,
+                    y: dy,
+                    wheel: 0,
+                    pan: 0,
+                };
+                let _ = usb_hid.push_input(&report);
+            }
+        }
+    }
+}

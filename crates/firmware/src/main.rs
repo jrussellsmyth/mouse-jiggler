@@ -76,8 +76,11 @@ fn main() -> ! {
     let mut line_buf: String<128> = String::new();
 
     // Configuration session management:
-    // If the GUI config app is connected, pause continuous jiggling.
-    // If no host serial heartbeat/command is heard for 5 seconds, resume auto-jiggling.
+    // Boot starts with a 15-second grace period where auto-jiggling is paused,
+    // giving you time to launch or connect the configuration app without your mouse jumping around.
+    // If the GUI config app is connected, jiggling remains paused.
+    // If no host serial heartbeat/command is heard after the grace period, normal auto-jiggling starts.
+    const BOOT_GRACE_PERIOD_MS: u32 = 15_000;
     let mut host_connected = false;
     let mut last_host_contact_ms: u32 = 0;
     let mut test_until_ms: u32 = 0;
@@ -96,12 +99,15 @@ fn main() -> ! {
                         host_connected = true;
                         last_host_contact_ms = now_ms;
 
+                        let in_boot_grace_period = now_ms < BOOT_GRACE_PERIOD_MS;
+                        let is_paused = (host_connected || in_boot_grace_period) && now_ms >= test_until_ms;
+
                         let resp = match parse_command(&line_buf) {
                             Ok(Command::GetStatus) => Response::Status {
                                 config: *engine.config(),
                                 total_jiggles: engine.total_jiggles(),
                                 uptime_secs: (now_us / 1_000_000) as u32,
-                                paused: host_connected && now_ms >= test_until_ms,
+                                paused: is_paused,
                                 testing: now_ms < test_until_ms,
                             },
                             Ok(Command::SetConfig(new_cfg)) => {
@@ -144,8 +150,9 @@ fn main() -> ! {
             host_connected = false;
         }
 
+        let in_boot_grace_period = now_ms < BOOT_GRACE_PERIOD_MS;
         let is_testing = now_ms < test_until_ms;
-        let should_jiggle = !host_connected || is_testing;
+        let should_jiggle = (!host_connected && !in_boot_grace_period) || is_testing;
 
         if usb_dev.state() == UsbDeviceState::Configured && should_jiggle {
             if let Some((dx, dy)) = engine.update(now_ms) {

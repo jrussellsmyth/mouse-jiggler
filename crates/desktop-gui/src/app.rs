@@ -23,19 +23,32 @@ impl Default for JigglerApp {
     fn default() -> Self {
         let ports = SerialClient::list_ports();
         let selected = ports.first().cloned().unwrap_or_default();
-        let (client, _) = SerialClient::new();
+        let (mut client, _) = SerialClient::new();
+        let mut event_rx = None;
+        let mut connected_port = None;
+        let mut status_message = "Disconnected".into();
+
+        // Auto-connect on launch if an RP2040 USB serial device is detected
+        if !selected.is_empty() && (selected.contains("usbmodem") || selected.contains("ttyACM")) {
+            if let Ok(rx) = client.connect(&selected) {
+                event_rx = Some(rx);
+                connected_port = Some(selected.clone());
+                status_message = format!("Auto-connected to {}", selected);
+            }
+        }
+
         Self {
             client,
-            event_rx: None,
+            event_rx,
             available_ports: ports,
             selected_port: selected,
-            connected_port: None,
+            connected_port,
             config: JiggleConfig::default(),
             jiggles: 0,
             uptime_secs: 0,
             device_paused: false,
             device_testing: false,
-            status_message: "Disconnected".into(),
+            status_message,
             last_ping: std::time::Instant::now(),
         }
     }

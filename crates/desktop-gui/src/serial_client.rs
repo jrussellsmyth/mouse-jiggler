@@ -42,11 +42,20 @@ impl SerialClient {
     }
 
     pub fn list_ports() -> Vec<String> {
-        serialport::available_ports()
+        let mut ports: Vec<String> = serialport::available_ports()
             .unwrap_or_default()
             .into_iter()
             .map(|p| p.port_name)
-            .collect()
+            .collect();
+
+        // Sort RP2040 / USB modem ports to the top
+        ports.sort_by(|a, b| {
+            let a_score = if a.contains("usbmodem") || a.contains("ttyACM") { 0 } else { 1 };
+            let b_score = if b.contains("usbmodem") || b.contains("ttyACM") { 0 } else { 1 };
+            a_score.cmp(&b_score).then_with(|| a.cmp(b))
+        });
+
+        ports
     }
 
     pub fn connect(&mut self, port_name: &str) -> Result<Receiver<ClientEvent>> {

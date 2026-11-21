@@ -49,12 +49,30 @@ Convert to `.uf2` for the RP2040 bootloader:
 elf2uf2-rs target/thumbv6m-none-eabi/release/firmware target/thumbv6m-none-eabi/release/firmware.uf2
 ```
 
-To flash directly to a connected RP2040-Zero in bootloader mode (`BOOT` + `RESET`):
+### 3. Flashing to RP2040-Zero
+
+Put the board into bootloader mode by holding down the **BOOT** button while pressing/releasing **RESET** (or while plugging it into USB). The volume `RPI-RP2` will appear.
+
+**Method A: Drag-and-drop or command line copy (Recommended on macOS)**
+```bash
+# macOS:
+cp target/thumbv6m-none-eabi/release/firmware.uf2 /Volumes/RPI-RP2/
+
+# Linux:
+cp target/thumbv6m-none-eabi/release/firmware.uf2 /media/$USER/RPI-RP2/
+
+# Windows (Command Prompt / PowerShell, assuming D: drive):
+copy target\thumbv6m-none-eabi\release\firmware.uf2 D:\
+```
+*Note: As soon as the `.uf2` file finishes copying, the board automatically reboots and runs the firmware, detaching the `RPI-RP2` drive.*
+
+**Method B: Direct deploy via elf2uf2-rs**
 ```bash
 elf2uf2-rs -d target/thumbv6m-none-eabi/release/firmware
 ```
+*(Note: On macOS, `elf2uf2-rs -d` can occasionally hang waiting for the OS volume mount lock. If that happens, press `Ctrl+C` and use Method A).*
 
-### 3. Running the Desktop GUI
+### 4. Running the Desktop GUI
 
 Run the cross-platform GUI application:
 ```bash

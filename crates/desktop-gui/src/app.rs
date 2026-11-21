@@ -11,6 +11,7 @@ pub struct JigglerApp {
     selected_port: String,
     connected_port: Option<String>,
     config: JiggleConfig,
+    has_synced_initial_config: bool,
     jiggles: u32,
     uptime_secs: u32,
     device_paused: bool,
@@ -44,6 +45,7 @@ impl Default for JigglerApp {
             selected_port: selected,
             connected_port,
             config: JiggleConfig::default(),
+            has_synced_initial_config: false,
             jiggles: 0,
             uptime_secs: 0,
             device_paused: false,
@@ -74,7 +76,12 @@ impl eframe::App for JigglerApp {
                         paused,
                         testing,
                     } => {
-                        self.config = config;
+                        // Only sync config into GUI sliders on the very first read
+                        // so user edits aren't overwritten by periodic background heartbeats
+                        if !self.has_synced_initial_config {
+                            self.config = config;
+                            self.has_synced_initial_config = true;
+                        }
                         self.jiggles = jiggles;
                         self.uptime_secs = uptime;
                         self.device_paused = paused;
@@ -138,6 +145,7 @@ impl eframe::App for JigglerApp {
                         self.client.disconnect();
                         self.connected_port = None;
                         self.event_rx = None;
+                        self.has_synced_initial_config = false;
                         self.status_message = "Disconnected".into();
                     }
                 });
@@ -202,6 +210,7 @@ impl eframe::App for JigglerApp {
                         .add_enabled(is_connected, egui::Button::new("Read Device Status"))
                         .clicked()
                     {
+                        self.has_synced_initial_config = false;
                         let _ = self.client.send_command(Command::GetStatus);
                     }
                 });

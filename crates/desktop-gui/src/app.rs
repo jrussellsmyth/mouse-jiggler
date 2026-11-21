@@ -10,6 +10,7 @@ pub struct JigglerApp {
     available_ports: Vec<String>,
     selected_port: String,
     connected_port: Option<String>,
+    manual_disconnect: bool,
     config: JiggleConfig,
     has_synced_initial_config: bool,
     jiggles: u32,
@@ -17,6 +18,7 @@ pub struct JigglerApp {
     device_paused: bool,
     device_testing: bool,
     status_message: String,
+    action_feedback: Option<(String, std::time::Instant)>,
     last_ping: std::time::Instant,
 }
 
@@ -44,6 +46,7 @@ impl Default for JigglerApp {
             available_ports: ports,
             selected_port: selected,
             connected_port,
+            manual_disconnect: false,
             config: JiggleConfig::default(),
             has_synced_initial_config: false,
             jiggles: 0,
@@ -51,6 +54,7 @@ impl Default for JigglerApp {
             device_paused: false,
             device_testing: false,
             status_message,
+            action_feedback: None,
             last_ping: std::time::Instant::now(),
         }
     }
@@ -67,7 +71,9 @@ impl eframe::App for JigglerApp {
                     }
                     ClientEvent::Disconnected => {
                         self.connected_port = None;
-                        self.status_message = "Disconnected".into();
+                        self.device_paused = false;
+                        self.device_testing = false;
+                        self.status_message = "Disconnected (waiting for device...)".into();
                     }
                     ClientEvent::StatusReceived {
                         config,
@@ -87,7 +93,7 @@ impl eframe::App for JigglerApp {
                         self.device_paused = paused;
                         self.device_testing = testing;
                         if testing {
-                            self.status_message = "Test jiggle running...".into();
+                            self.status_message = "Test jiggle running (10s demo)...".into();
                         } else if paused {
                             self.status_message =
                                 "Connected (jiggler paused for configuration)".into();
@@ -96,9 +102,11 @@ impl eframe::App for JigglerApp {
                         }
                     }
                     ClientEvent::CommandAck => {
-                        self.status_message = "Command accepted".into();
+                        self.status_message = "Command accepted by device".into();
                     }
                     ClientEvent::Error(err) => {
+                        self.action_feedback =
+                            Some((format!("Error: {}", err), std::time::Instant::now()));
                         self.status_message = format!("Error: {}", err);
                     }
                 }
@@ -130,6 +138,7 @@ impl eframe::App for JigglerApp {
 
                     if self.connected_port.is_none() {
                         if ui.button("Connect").clicked() && !self.selected_port.is_empty() {
+                            self.manual_disconnect = false;
                             match self.client.connect(&self.selected_port) {
                                 Ok(rx) => {
                                     self.event_rx = Some(rx);
@@ -142,6 +151,7 @@ impl eframe::App for JigglerApp {
                             }
                         }
                     } else if ui.button("Disconnect").clicked() {
+                        self.manual_disconnect = true;
                         self.client.disconnect();
                         self.connected_port = None;
                         self.event_rx = None;
@@ -197,6 +207,10 @@ impl eframe::App for JigglerApp {
                         .clicked()
                     {
                         let _ = self.client.send_command(Command::SetConfig(self.config));
+                        self.action_feedback = Some((
+                            "Settings applied to device RAM".into(),
+                            std::time::Instant::now(),
+                        ));
                     }
 
                     if ui
@@ -206,6 +220,10 @@ impl eframe::App for JigglerApp {
                         // Ensure current GUI settings are applied before committing to flash
                         let _ = self.client.send_command(Command::SetConfig(self.config));
                         let _ = self.client.send_command(Command::SaveConfig);
+                        self.action_feedback = Some((
+                            "Settings applied and saved to Flash!".into(),
+                            std::time::Instant::now(),
+                        ));
                     }
 
                     if ui
@@ -214,6 +232,10 @@ impl eframe::App for JigglerApp {
                     {
                         self.has_synced_initial_config = false;
                         let _ = self.client.send_command(Command::GetStatus);
+                        self.action_feedback = Some((
+                            "Reloaded active settings from device".into(),
+                            std::time::Instant::now(),
+                        ));
                     }
                 });
 
@@ -234,9 +256,22 @@ impl eframe::App for JigglerApp {
                         )
                         .clicked()
                     {
-                        let _ = self
-                            .client
-                            .send_command(Command::StartTest { duration_secs: 10 });
+                        if self.config.mode == JiggleMode::Off {
+                            self.action_feedback = Some((
+                                "Select a movement mode other than 'Off' to test".into(),
+                                std::time::Instant::now(),
+                            ));
+                        } else {
+                            let _ = self.client.send_command(Command::SetConfig(self.config));
+                            let _ = self
+                                .client
+                                .send_command(Command::StartTest { duration_secs: 10 });
+                            self.device_testing = true;
+                            self.action_feedback = Some((
+                                "Running 10-second test jiggle sequence...".into(),
+                                std::time::Instant::now(),
+                            ));
+                        }
                     }
                 });
             });
@@ -266,14 +301,34 @@ impl eframe::App for JigglerApp {
 
             ui.add_space(8.0);
             ui.separator();
-            ui.label(format!("Status: {}", self.status_message));
+            let displayed_status = if let Some((ref msg, ts)) = self.action_feedback {
+                if ts.elapsed() < std::time::Duration::from_secs(4) {
+                    format!("{} | {}", msg, self.status_message)
+                } else {
+                    self.status_message.clone()
+                }
+            } else {
+                self.status_message.clone()
+            };
+            ui.label(format!("Status: {}", displayed_status));
         });
 
-        // Periodic heartbeat when connected to keep the device paused during config
-        if self.connected_port.is_some()
-            && self.last_ping.elapsed() >= std::time::Duration::from_millis(1500)
-        {
-            let _ = self.client.send_command(Command::GetStatus);
+        // Periodic heartbeat when connected to keep the device paused during config,
+        // or auto-reconnect when disconnected (e.g. after tapping the hardware RESET button).
+        if self.last_ping.elapsed() >= std::time::Duration::from_millis(1500) {
+            if self.connected_port.is_some() {
+                let _ = self.client.send_command(Command::GetStatus);
+            } else if !self.manual_disconnect {
+                self.available_ports = SerialClient::list_ports();
+                if let Some(first_port) = self.available_ports.first().cloned() {
+                    if first_port.contains("usbmodem") || first_port.contains("ttyACM") {
+                        self.selected_port = first_port.clone();
+                        if let Ok(rx) = self.client.connect(&first_port) {
+                            self.event_rx = Some(rx);
+                        }
+                    }
+                }
+            }
             self.last_ping = std::time::Instant::now();
         }
 

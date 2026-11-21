@@ -1,7 +1,7 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use common::{Command, JiggleConfig, JiggleMode};
 use crossbeam_channel::{bounded, Receiver, Sender};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -46,12 +46,22 @@ impl SerialClient {
             .unwrap_or_default()
             .into_iter()
             .map(|p| p.port_name)
+            // On macOS, exclude /dev/tty.* dial-in nodes in favor of /dev/cu.* call-out nodes
+            .filter(|name| !name.starts_with("/dev/tty."))
             .collect();
 
         // Sort RP2040 / USB modem ports to the top
         ports.sort_by(|a, b| {
-            let a_score = if a.contains("usbmodem") || a.contains("ttyACM") { 0 } else { 1 };
-            let b_score = if b.contains("usbmodem") || b.contains("ttyACM") { 0 } else { 1 };
+            let a_score = if a.contains("usbmodem") || a.contains("ttyACM") {
+                0
+            } else {
+                1
+            };
+            let b_score = if b.contains("usbmodem") || b.contains("ttyACM") {
+                0
+            } else {
+                1
+            };
             a_score.cmp(&b_score).then_with(|| a.cmp(b))
         });
 
@@ -61,7 +71,7 @@ impl SerialClient {
     pub fn connect(&mut self, port_name: &str) -> Result<Receiver<ClientEvent>> {
         self.disconnect();
 
-        let (cmd_tx, cmd_rx) = bounded::<Command>(16);
+        let (cmd_tx, cmd_rx) = bounded::<Command>(32);
         let (event_tx, event_rx) = bounded(64);
         let stop = Arc::new(AtomicBool::new(false));
 
@@ -73,28 +83,36 @@ impl SerialClient {
 
         thread::spawn(move || {
             let port_res = serialport::new(&port_path, 115_200)
-                .timeout(Duration::from_millis(500))
+                .timeout(Duration::from_millis(30))
                 .open();
 
             let mut port = match port_res {
-                Ok(p) => {
+                Ok(mut p) => {
+                    let _ = p.write_data_terminal_ready(true);
+                    let _ = p.write_request_to_send(true);
                     let _ = event_tx.send(ClientEvent::Connected(port_path.clone()));
                     p
                 }
                 Err(e) => {
                     let _ =
                         event_tx.send(ClientEvent::Error(format!("Failed to open port: {}", e)));
+                    let _ = event_tx.send(ClientEvent::Disconnected);
                     return;
                 }
             };
 
             // Query initial status
-            let _ = port.write_all(b"GET\r\n");
+            if port.write_all(b"GET\r\n").is_err() {
+                let _ = event_tx.send(ClientEvent::Disconnected);
+                return;
+            }
+            let _ = port.flush();
 
-            let mut reader = BufReader::new(port.try_clone().expect("clone port"));
+            let mut rx_buf = [0u8; 256];
+            let mut line_acc = String::new();
 
-            while !stop.load(Ordering::Relaxed) {
-                // Check outgoing commands
+            'outer: while !stop.load(Ordering::Relaxed) {
+                // Drain and send outgoing commands
                 while let Ok(cmd) = cmd_rx.try_recv() {
                     let payload = match cmd {
                         Command::GetStatus => "GET\r\n".to_string(),
@@ -124,68 +142,84 @@ impl SerialClient {
 
                     if let Err(e) = port.write_all(payload.as_bytes()) {
                         let _ = event_tx.send(ClientEvent::Error(format!("Write failed: {}", e)));
-                        break;
+                        break 'outer;
                     }
+                    let _ = port.flush();
                 }
 
-                // Check incoming lines
-                let mut line = String::new();
-                match reader.read_line(&mut line) {
+                // Read available incoming bytes into persistent line accumulator
+                match port.read(&mut rx_buf) {
                     Ok(0) => {
-                        thread::sleep(Duration::from_millis(20));
+                        // EOF / POLLHUP: USB serial device was reset or unplugged
+                        break 'outer;
                     }
-                    Ok(_) => {
-                        let trimmed = line.trim();
-                        if trimmed == "OK" {
-                            let _ = event_tx.send(ClientEvent::CommandAck);
-                        } else if trimmed.starts_with("ERR:") {
-                            let _ = event_tx.send(ClientEvent::Error(trimmed.to_string()));
-                        } else if let Some(rest) = trimmed.strip_prefix("STATUS ") {
-                            let mut cfg = JiggleConfig::default();
-                            let mut jiggles = 0u32;
-                            let mut uptime = 0u32;
-                            let mut paused = false;
-                            let mut testing = false;
-
-                            for token in rest.split_whitespace() {
-                                let mut kv = token.split('=');
-                                let k = kv.next().unwrap_or("");
-                                let v = kv.next().unwrap_or("");
-                                match k {
-                                    "enabled" => cfg.enabled = v == "1" || v == "true",
-                                    "mode" => match v {
-                                        "off" => cfg.mode = JiggleMode::Off,
-                                        "random" => cfg.mode = JiggleMode::Random,
-                                        "nudge" => cfg.mode = JiggleMode::GentleNudge,
-                                        "circle" => cfg.mode = JiggleMode::Circle,
-                                        _ => {}
-                                    },
-                                    "period_ms" => cfg.period_ms = v.parse().unwrap_or(1000),
-                                    "scale_px" => cfg.scale_px = v.parse().unwrap_or(5),
-                                    "jiggles" => jiggles = v.parse().unwrap_or(0),
-                                    "uptime" => uptime = v.parse().unwrap_or(0),
-                                    "paused" => paused = v == "1" || v == "true",
-                                    "testing" => testing = v == "1" || v == "true",
-                                    _ => {}
+                    Ok(n) => {
+                        if let Ok(chunk) = std::str::from_utf8(&rx_buf[..n]) {
+                            line_acc.push_str(chunk);
+                        } else {
+                            for &b in &rx_buf[..n] {
+                                if b.is_ascii() {
+                                    line_acc.push(b as char);
                                 }
                             }
-                            let _ = event_tx.send(ClientEvent::StatusReceived {
-                                config: cfg,
-                                jiggles,
-                                uptime,
-                                paused,
-                                testing,
-                            });
+                        }
+
+                        while let Some(newline_idx) = line_acc.find('\n') {
+                            let line: String = line_acc.drain(..=newline_idx).collect();
+                            let trimmed = line.trim();
+                            if trimmed.is_empty() {
+                                continue;
+                            }
+                            if trimmed == "OK" {
+                                let _ = event_tx.send(ClientEvent::CommandAck);
+                            } else if trimmed.starts_with("ERR:") {
+                                let _ = event_tx.send(ClientEvent::Error(trimmed.to_string()));
+                            } else if let Some(rest) = trimmed.strip_prefix("STATUS ") {
+                                let mut cfg = JiggleConfig::default();
+                                let mut jiggles = 0u32;
+                                let mut uptime = 0u32;
+                                let mut paused = false;
+                                let mut testing = false;
+
+                                for token in rest.split_whitespace() {
+                                    let mut kv = token.split('=');
+                                    let k = kv.next().unwrap_or("");
+                                    let v = kv.next().unwrap_or("");
+                                    match k {
+                                        "enabled" => cfg.enabled = v == "1" || v == "true",
+                                        "mode" => match v {
+                                            "off" => cfg.mode = JiggleMode::Off,
+                                            "random" => cfg.mode = JiggleMode::Random,
+                                            "nudge" => cfg.mode = JiggleMode::GentleNudge,
+                                            "circle" => cfg.mode = JiggleMode::Circle,
+                                            _ => {}
+                                        },
+                                        "period_ms" => cfg.period_ms = v.parse().unwrap_or(1000),
+                                        "scale_px" => cfg.scale_px = v.parse().unwrap_or(5),
+                                        "jiggles" => jiggles = v.parse().unwrap_or(0),
+                                        "uptime" => uptime = v.parse().unwrap_or(0),
+                                        "paused" => paused = v == "1" || v == "true",
+                                        "testing" => testing = v == "1" || v == "true",
+                                        _ => {}
+                                    }
+                                }
+                                let _ = event_tx.send(ClientEvent::StatusReceived {
+                                    config: cfg,
+                                    jiggles,
+                                    uptime,
+                                    paused,
+                                    testing,
+                                });
+                            }
                         }
                     }
                     Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {}
+                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
                     Err(e) => {
                         let _ = event_tx.send(ClientEvent::Error(format!("Read error: {}", e)));
-                        break;
+                        break 'outer;
                     }
                 }
-
-                thread::sleep(Duration::from_millis(10));
             }
 
             let _ = event_tx.send(ClientEvent::Disconnected);
@@ -206,8 +240,8 @@ impl SerialClient {
 
     pub fn send_command(&self, cmd: Command) -> Result<()> {
         if let Some(ref tx) = self.cmd_tx {
-            tx.send(cmd)
-                .context("Failed to send command to worker thread")
+            tx.try_send(cmd)
+                .map_err(|e| anyhow::anyhow!("Failed to queue command: {}", e))
         } else {
             bail!("Not connected to serial device")
         }

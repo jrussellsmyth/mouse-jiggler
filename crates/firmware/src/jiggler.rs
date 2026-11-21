@@ -25,13 +25,13 @@ impl JigglerEngine {
         &self.config
     }
 
-    pub fn set_config(&mut self, config: JiggleConfig) {
+    pub fn set_config(&mut self, mut config: JiggleConfig) {
+        config.sanitize();
         if self.config.mode != config.mode {
             self.angle_idx = 0;
             self.return_step = None;
         }
         self.config = config;
-        self.config.sanitize();
     }
 
     pub fn total_jiggles(&self) -> u32 {
@@ -47,14 +47,21 @@ impl JigglerEngine {
         x
     }
 
-    pub fn update(&mut self, current_time_ms: u32) -> Option<(i8, i8)> {
-        if !self.config.enabled || self.config.mode == JiggleMode::Off {
+    pub fn update(&mut self, current_time_ms: u32, force_enabled: bool) -> Option<(i8, i8)> {
+        if (!self.config.enabled && !force_enabled) || self.config.mode == JiggleMode::Off {
             self.return_step = None;
             return None;
         }
 
-        if let Some((rx, ry)) = self.return_step.take() {
-            return Some((-rx, -ry));
+        // Wait at least 25ms before emitting the complementary return step so the
+        // 10ms USB HID endpoint has already transmitted the initial movement report.
+        if self.return_step.is_some() {
+            if current_time_ms.wrapping_sub(self.last_move_ms) >= 25 {
+                if let Some((rx, ry)) = self.return_step.take() {
+                    return Some((-rx, -ry));
+                }
+            }
+            return None;
         }
 
         if current_time_ms.wrapping_sub(self.last_move_ms) < self.config.period_ms {

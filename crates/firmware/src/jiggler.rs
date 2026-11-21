@@ -88,20 +88,43 @@ impl JigglerEngine {
                 Some((dx, dy))
             }
             JiggleMode::Circle => {
-                self.angle_idx = (self.angle_idx + 1) % 8;
-                // Incremental displacements along an 8-sided regular polygon:
-                // Sum of dx = (scale) + 0 + (-scale) + (-scale) + 0 + (scale) + (scale) + (-scale) = 0
-                // Sum of dy = 0 + (scale) + (scale) + 0 + (-scale) + (-scale) + 0 + 0 = 0
-                let (dx, dy) = match self.angle_idx {
-                    0 => (scale, 0),
-                    1 => (0, scale),
-                    2 => (-scale, 0),
-                    3 => (-scale, 0),
-                    4 => (0, -scale),
-                    5 => (0, -scale),
-                    6 => (scale, 0),
-                    _ => (0, scale),
-                };
+                // Smooth 16-point circular orbit using fixed-point precomputed trigonometry
+                // Each point P[i] = (round(R * cos θ), round(R * sin θ))
+                // The delta between consecutive points dx = P[i+1].x - P[i].x, dy = P[i+1].y - P[i].y
+                // Because P[16] == P[0], sum(dx) = 0 and sum(dy) = 0 exactly for any radius.
+                const CIRCLE_POINTS: usize = 16;
+                const TRIG_TABLE: [(i32, i32); CIRCLE_POINTS] = [
+                    (1024, 0),
+                    (946, 392),
+                    (724, 724),
+                    (392, 946),
+                    (0, 1024),
+                    (-392, 946),
+                    (-724, 724),
+                    (-946, 392),
+                    (-1024, 0),
+                    (-946, -392),
+                    (-724, -724),
+                    (-392, -946),
+                    (0, -1024),
+                    (392, -946),
+                    (724, -724),
+                    (946, -392),
+                ];
+
+                let cur_idx = (self.angle_idx as usize) % CIRCLE_POINTS;
+                let next_idx = (cur_idx + 1) % CIRCLE_POINTS;
+                self.angle_idx = next_idx as u8;
+
+                let r = scale as i32;
+                let p1_x = (TRIG_TABLE[cur_idx].0 * r + 512) >> 10;
+                let p1_y = (TRIG_TABLE[cur_idx].1 * r + 512) >> 10;
+                let p2_x = (TRIG_TABLE[next_idx].0 * r + 512) >> 10;
+                let p2_y = (TRIG_TABLE[next_idx].1 * r + 512) >> 10;
+
+                let dx = (p2_x - p1_x) as i8;
+                let dy = (p2_y - p1_y) as i8;
+
                 Some((dx, dy))
             }
         }

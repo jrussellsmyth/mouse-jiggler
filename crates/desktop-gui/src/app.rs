@@ -203,6 +203,8 @@ impl eframe::App for JigglerApp {
                         .add_enabled(is_connected, egui::Button::new("Save To Flash"))
                         .clicked()
                     {
+                        // Ensure current GUI settings are applied before committing to flash
+                        let _ = self.client.send_command(Command::SetConfig(self.config));
                         let _ = self.client.send_command(Command::SaveConfig);
                     }
 

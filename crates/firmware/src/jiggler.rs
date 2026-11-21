@@ -26,6 +26,10 @@ impl JigglerEngine {
     }
 
     pub fn set_config(&mut self, config: JiggleConfig) {
+        if self.config.mode != config.mode {
+            self.angle_idx = 0;
+            self.return_step = None;
+        }
         self.config = config;
         self.config.sanitize();
     }
@@ -85,15 +89,18 @@ impl JigglerEngine {
             }
             JiggleMode::Circle => {
                 self.angle_idx = (self.angle_idx + 1) % 8;
+                // Incremental displacements along an 8-sided regular polygon:
+                // Sum of dx = (scale) + 0 + (-scale) + (-scale) + 0 + (scale) + (scale) + (-scale) = 0
+                // Sum of dy = 0 + (scale) + (scale) + 0 + (-scale) + (-scale) + 0 + 0 = 0
                 let (dx, dy) = match self.angle_idx {
                     0 => (scale, 0),
-                    1 => (scale, scale),
-                    2 => (0, scale),
-                    3 => (-scale, scale),
-                    4 => (-scale, 0),
-                    5 => (-scale, -scale),
-                    6 => (0, -scale),
-                    _ => (scale, -scale),
+                    1 => (0, scale),
+                    2 => (-scale, 0),
+                    3 => (-scale, 0),
+                    4 => (0, -scale),
+                    5 => (0, -scale),
+                    6 => (scale, 0),
+                    _ => (0, scale),
                 };
                 Some((dx, dy))
             }

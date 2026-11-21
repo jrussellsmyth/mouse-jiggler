@@ -79,4 +79,8 @@ Run the cross-platform GUI application:
 cargo run --package desktop-gui --release
 ```
 
-Select the serial port corresponding to your RP2040-Zero (e.g., `/dev/cu.usbmodem...` on macOS or `COMx` on Windows), click **Connect**, adjust the sliders, and click **Apply Settings**.
+Select the serial port corresponding to your RP2040-Zero (e.g., `/dev/cu.usbmodem...` on macOS or `COMx` on Windows) and click **Connect**.
+
+- **Safe Configuration Mode**: Once connected to the GUI, the RP2040 firmware detects the configuration session and **automatically pauses mouse jiggling** so you can comfortably move your mouse and configure options without interference. If the app disconnects or closes, the jiggler resumes normal operation automatically.
+- **10-Second Test Button**: Click **"Test Jiggle (10s Demo)"** to temporarily run your selected motion settings for 10 seconds to preview the behavior before saving.
+- **Apply & Save**: Click **Apply Settings** to send updated period/scale/mode, or **Save To Flash** to store them permanently.

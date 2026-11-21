@@ -15,6 +15,8 @@ pub enum ClientEvent {
         config: JiggleConfig,
         jiggles: u32,
         uptime: u32,
+        paused: bool,
+        testing: bool,
     },
     CommandAck,
     Error(String),
@@ -89,6 +91,11 @@ impl SerialClient {
                         Command::GetStatus => "GET\r\n".to_string(),
                         Command::SaveConfig => "SAVE\r\n".to_string(),
                         Command::ResetDefaults => "RESET\r\n".to_string(),
+                        Command::Pause => "PAUSE\r\n".to_string(),
+                        Command::Resume => "RESUME\r\n".to_string(),
+                        Command::StartTest { duration_secs } => {
+                            format!("TEST {}\r\n", duration_secs)
+                        }
                         Command::SetConfig(cfg) => {
                             let mode_str = match cfg.mode {
                                 JiggleMode::Off => "off",
@@ -128,6 +135,8 @@ impl SerialClient {
                             let mut cfg = JiggleConfig::default();
                             let mut jiggles = 0u32;
                             let mut uptime = 0u32;
+                            let mut paused = false;
+                            let mut testing = false;
 
                             for token in rest.split_whitespace() {
                                 let mut kv = token.split('=');
@@ -146,6 +155,8 @@ impl SerialClient {
                                     "scale_px" => cfg.scale_px = v.parse().unwrap_or(5),
                                     "jiggles" => jiggles = v.parse().unwrap_or(0),
                                     "uptime" => uptime = v.parse().unwrap_or(0),
+                                    "paused" => paused = v == "1" || v == "true",
+                                    "testing" => testing = v == "1" || v == "true",
                                     _ => {}
                                 }
                             }
@@ -153,6 +164,8 @@ impl SerialClient {
                                 config: cfg,
                                 jiggles,
                                 uptime,
+                                paused,
+                                testing,
                             });
                         }
                     }

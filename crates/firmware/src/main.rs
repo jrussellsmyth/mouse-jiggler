@@ -9,12 +9,7 @@ use heapless::String;
 use panic_halt as _;
 use rp2040_boot2 as _;
 use rp2040_hal::{
-    clocks::init_clocks_and_plls,
-    pac,
-    sio::Sio,
-    timer::Timer,
-    usb::UsbBus,
-    watchdog::Watchdog,
+    clocks::init_clocks_and_plls, pac, sio::Sio, timer::Timer, usb::UsbBus, watchdog::Watchdog,
 };
 use usb_device::{
     class_prelude::UsbBusAllocator,
@@ -80,19 +75,34 @@ fn main() -> ! {
     let mut engine = jiggler::JigglerEngine::new(JiggleConfig::default());
     let mut line_buf: String<128> = String::new();
 
+    // Configuration session management:
+    // If the GUI config app is connected, pause continuous jiggling.
+    // If no host serial heartbeat/command is heard for 5 seconds, resume auto-jiggling.
+    let mut host_connected = false;
+    let mut last_host_contact_ms: u32 = 0;
+    let mut test_until_ms: u32 = 0;
+
     loop {
         let _ = usb_dev.poll(&mut [&mut usb_serial, &mut usb_hid]);
+
+        let now_us = timer.get_counter().ticks();
+        let now_ms = (now_us / 1000) as u32;
 
         let mut read_buf = [0u8; 64];
         if let Ok(count) = usb_serial.read(&mut read_buf) {
             for &b in &read_buf[..count] {
                 if b == b'\n' || b == b'\r' {
                     if !line_buf.is_empty() {
+                        host_connected = true;
+                        last_host_contact_ms = now_ms;
+
                         let resp = match parse_command(&line_buf) {
                             Ok(Command::GetStatus) => Response::Status {
                                 config: *engine.config(),
                                 total_jiggles: engine.total_jiggles(),
-                                uptime_secs: (timer.get_counter().ticks() / 1_000_000) as u32,
+                                uptime_secs: (now_us / 1_000_000) as u32,
+                                paused: host_connected && now_ms >= test_until_ms,
+                                testing: now_ms < test_until_ms,
                             },
                             Ok(Command::SetConfig(new_cfg)) => {
                                 engine.set_config(new_cfg);
@@ -101,6 +111,20 @@ fn main() -> ! {
                             Ok(Command::SaveConfig) => Response::Ok,
                             Ok(Command::ResetDefaults) => {
                                 engine.set_config(JiggleConfig::default());
+                                Response::Ok
+                            }
+                            Ok(Command::StartTest { duration_secs }) => {
+                                test_until_ms =
+                                    now_ms.saturating_add(duration_secs.saturating_mul(1000));
+                                Response::Ok
+                            }
+                            Ok(Command::Pause) => {
+                                host_connected = true;
+                                Response::Ok
+                            }
+                            Ok(Command::Resume) => {
+                                host_connected = false;
+                                test_until_ms = 0;
                                 Response::Ok
                             }
                             Err(err) => Response::Error(err),
@@ -115,10 +139,15 @@ fn main() -> ! {
             }
         }
 
-        let now_us = timer.get_counter().ticks();
-        let now_ms = (now_us / 1000) as u32;
+        // Host timeout: if no serial communication for 5 seconds, resume auto-jiggling
+        if host_connected && now_ms.wrapping_sub(last_host_contact_ms) > 5000 {
+            host_connected = false;
+        }
 
-        if usb_dev.state() == UsbDeviceState::Configured {
+        let is_testing = now_ms < test_until_ms;
+        let should_jiggle = !host_connected || is_testing;
+
+        if usb_dev.state() == UsbDeviceState::Configured && should_jiggle {
             if let Some((dx, dy)) = engine.update(now_ms) {
                 let report = MouseReport {
                     buttons: 0,

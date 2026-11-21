@@ -13,7 +13,10 @@ pub struct JigglerApp {
     config: JiggleConfig,
     jiggles: u32,
     uptime_secs: u32,
+    device_paused: bool,
+    device_testing: bool,
     status_message: String,
+    last_ping: std::time::Instant,
 }
 
 impl Default for JigglerApp {
@@ -30,7 +33,10 @@ impl Default for JigglerApp {
             config: JiggleConfig::default(),
             jiggles: 0,
             uptime_secs: 0,
+            device_paused: false,
+            device_testing: false,
             status_message: "Disconnected".into(),
+            last_ping: std::time::Instant::now(),
         }
     }
 }
@@ -52,11 +58,22 @@ impl eframe::App for JigglerApp {
                         config,
                         jiggles,
                         uptime,
+                        paused,
+                        testing,
                     } => {
                         self.config = config;
                         self.jiggles = jiggles;
                         self.uptime_secs = uptime;
-                        self.status_message = "Status synchronized".into();
+                        self.device_paused = paused;
+                        self.device_testing = testing;
+                        if testing {
+                            self.status_message = "Test jiggle running...".into();
+                        } else if paused {
+                            self.status_message =
+                                "Connected (jiggler paused for configuration)".into();
+                        } else {
+                            self.status_message = "Status synchronized".into();
+                        }
                     }
                     ClientEvent::CommandAck => {
                         self.status_message = "Command accepted".into();
@@ -175,13 +192,46 @@ impl eframe::App for JigglerApp {
                         let _ = self.client.send_command(Command::GetStatus);
                     }
                 });
+
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let is_connected = self.connected_port.is_some();
+
+                    let test_btn_text = if self.device_testing {
+                        "Testing Sequence Running..."
+                    } else {
+                        "Test Jiggle (10s Demo)"
+                    };
+
+                    if ui
+                        .add_enabled(
+                            is_connected && !self.device_testing,
+                            egui::Button::new(test_btn_text),
+                        )
+                        .clicked()
+                    {
+                        let _ = self
+                            .client
+                            .send_command(Command::StartTest { duration_secs: 10 });
+                    }
+                });
             });
 
             ui.add_space(8.0);
 
             ui.group(|ui| {
-                ui.label("Device Statistics");
+                ui.label("Device Statistics & State");
                 ui.separator();
+                let state_str = if self.connected_port.is_none() {
+                    "Disconnected (Auto-jiggling when plugged into USB)"
+                } else if self.device_testing {
+                    "TESTING SEQUENCE ACTIVE (10s)"
+                } else if self.device_paused {
+                    "PAUSED (Configuration session active)"
+                } else {
+                    "Active"
+                };
+                ui.label(format!("Device State: {}", state_str));
                 ui.label(format!("Total Jiggles Sent: {}", self.jiggles));
                 ui.label(format!(
                     "Device Uptime: {}s ({:.1} min)",
@@ -194,6 +244,14 @@ impl eframe::App for JigglerApp {
             ui.separator();
             ui.label(format!("Status: {}", self.status_message));
         });
+
+        // Periodic heartbeat when connected to keep the device paused during config
+        if self.connected_port.is_some()
+            && self.last_ping.elapsed() >= std::time::Duration::from_millis(1500)
+        {
+            let _ = self.client.send_command(Command::GetStatus);
+            self.last_ping = std::time::Instant::now();
+        }
 
         ctx.request_repaint_after(std::time::Duration::from_millis(50));
     }

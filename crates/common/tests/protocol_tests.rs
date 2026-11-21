@@ -45,10 +45,26 @@ fn test_serialize_response() {
         },
         total_jiggles: 42,
         uptime_secs: 120,
+        paused: true,
+        testing: false,
     };
     let serialized = serialize_response(&resp);
     assert!(serialized
-        .contains("STATUS enabled=1 mode=random period_ms=1500 scale_px=10 jiggles=42 uptime=120"));
+        .contains("STATUS enabled=1 mode=random period_ms=1500 scale_px=10 jiggles=42 uptime=120 paused=1 testing=0"));
+}
+
+#[test]
+fn test_parse_pause_resume_test() {
+    assert_eq!(parse_command("PAUSE").unwrap(), Command::Pause);
+    assert_eq!(parse_command("resume").unwrap(), Command::Resume);
+    assert_eq!(
+        parse_command("TEST 15").unwrap(),
+        Command::StartTest { duration_secs: 15 }
+    );
+    assert_eq!(
+        parse_command("test").unwrap(),
+        Command::StartTest { duration_secs: 10 }
+    );
 }
 
 #[test]

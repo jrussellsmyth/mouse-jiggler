@@ -27,8 +27,9 @@ use usbd_hid::{
 use usbd_serial::SerialPort;
 
 #[link_section = ".boot2"]
+#[no_mangle]
 #[used]
-pub static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_GENERIC_03H;
+pub static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_W25Q080;
 
 #[entry]
 fn main() -> ! {
@@ -80,36 +81,36 @@ fn main() -> ! {
     let mut line_buf: String<128> = String::new();
 
     loop {
-        if usb_dev.poll(&mut [&mut usb_serial, &mut usb_hid]) {
-            let mut read_buf = [0u8; 64];
-            if let Ok(count) = usb_serial.read(&mut read_buf) {
-                for &b in &read_buf[..count] {
-                    if b == b'\n' || b == b'\r' {
-                        if !line_buf.is_empty() {
-                            let resp = match parse_command(&line_buf) {
-                                Ok(Command::GetStatus) => Response::Status {
-                                    config: *engine.config(),
-                                    total_jiggles: engine.total_jiggles(),
-                                    uptime_secs: (timer.get_counter().ticks() / 1_000_000) as u32,
-                                },
-                                Ok(Command::SetConfig(new_cfg)) => {
-                                    engine.set_config(new_cfg);
-                                    Response::Ok
-                                }
-                                Ok(Command::SaveConfig) => Response::Ok,
-                                Ok(Command::ResetDefaults) => {
-                                    engine.set_config(JiggleConfig::default());
-                                    Response::Ok
-                                }
-                                Err(err) => Response::Error(err),
-                            };
-                            let resp_str = serialize_response(&resp);
-                            let _ = usb_serial.write(resp_str.as_bytes());
-                            line_buf.clear();
-                        }
-                    } else if line_buf.len() < line_buf.capacity() {
-                        let _ = line_buf.push(b as char);
+        let _ = usb_dev.poll(&mut [&mut usb_serial, &mut usb_hid]);
+
+        let mut read_buf = [0u8; 64];
+        if let Ok(count) = usb_serial.read(&mut read_buf) {
+            for &b in &read_buf[..count] {
+                if b == b'\n' || b == b'\r' {
+                    if !line_buf.is_empty() {
+                        let resp = match parse_command(&line_buf) {
+                            Ok(Command::GetStatus) => Response::Status {
+                                config: *engine.config(),
+                                total_jiggles: engine.total_jiggles(),
+                                uptime_secs: (timer.get_counter().ticks() / 1_000_000) as u32,
+                            },
+                            Ok(Command::SetConfig(new_cfg)) => {
+                                engine.set_config(new_cfg);
+                                Response::Ok
+                            }
+                            Ok(Command::SaveConfig) => Response::Ok,
+                            Ok(Command::ResetDefaults) => {
+                                engine.set_config(JiggleConfig::default());
+                                Response::Ok
+                            }
+                            Err(err) => Response::Error(err),
+                        };
+                        let resp_str = serialize_response(&resp);
+                        let _ = usb_serial.write(resp_str.as_bytes());
+                        line_buf.clear();
                     }
+                } else if line_buf.len() < line_buf.capacity() {
+                    let _ = line_buf.push(b as char);
                 }
             }
         }

@@ -1,0 +1,31 @@
+# Rust / Cargo build artifacts
+/target/
+target/
+**/*.rs.bk
+*.pdb
+
+# Profiling, coverage, and test outputs
+*.profraw
+*.profdata
+lcov.info
+cobertura.xml
+mutants.out/
+flamegraph.svg
+perf.data
+perf.data.old
+.metrics/
+
+# Embedded firmware artifacts outside target/
+*.uf2
+*.bin
+*.elf
+*.map
+
+# OS & Editor files
+.DS_Store
+**/.DS_Store
+Thumbs.db
+*~
+*.swp
+*.swo
+.idea/

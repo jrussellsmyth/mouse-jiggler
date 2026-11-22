@@ -61,7 +61,7 @@ impl Default for JigglerApp {
 }
 
 impl eframe::App for JigglerApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         if let Some(ref rx) = self.event_rx {
             while let Ok(event) = rx.try_recv() {
                 match event {
@@ -113,7 +113,7 @@ impl eframe::App for JigglerApp {
             }
         }
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             ui.heading("RP2040 Mouse Jiggler Controller");
             ui.add_space(8.0);
 
@@ -352,6 +352,6 @@ impl eframe::App for JigglerApp {
             self.last_ping = std::time::Instant::now();
         }
 
-        ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        ui.request_repaint_after(std::time::Duration::from_millis(50));
     }
 }

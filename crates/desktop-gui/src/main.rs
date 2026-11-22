@@ -16,6 +16,6 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "RP2040 Mouse Jiggler Config",
         native_options,
-        Box::new(|_cc| Box::new(JigglerApp::default())),
+        Box::new(|_cc| Ok(Box::new(JigglerApp::default()))),
     )
 }
